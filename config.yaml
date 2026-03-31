@@ -1,0 +1,74 @@
+# TikTok Scraper Configuration
+
+# HTTP Client settings
+http_client:
+  timeout: 30
+  connect_timeout: 8
+  max_retries: 3
+  backoff_factor: 1.0  # Exponential backoff multiplier (1s, 2s, 4s, etc.)
+
+# Scraper execution settings
+scraper:
+  batch_size: 4  # Process N posts at a time (fetch metadata -> download -> write -> next batch)
+
+# Proxy pool configuration
+proxy_pool:
+  proxies:
+    - "__localhost__"  # Use local network (no proxy)
+    # Add your proxies below:
+    - "http://192.168.50.102:5080" # Dublin
+  
+  # Minimum seconds between proxy reuse attempts
+  throttle_seconds: 2
+
+  # After N consecutive failures on a proxy, mark it "broken"
+  failure_threshold: 10
+
+# Media download settings
+media_download:
+  # Video download specific
+  video_timeout: 30
+  
+  # Image download specific
+  image_timeout: 30
+  
+  # Download in parallel
+  max_concurrent_images: 3  # Parallel image downloads per post
+  max_concurrent_downloads: 5  # Overall concurrent downloads
+
+# Browser fallback (Playwright)
+browser:
+  enabled: true
+  headless: true
+  timeout: 40  # Seconds to wait for video src update in browser
+  navigate_timeout: 30
+  wait_for_video_timeout: 12
+
+# Retry strategies
+retry:
+  # Connection errors: retry with exponential backoff
+  connection_errors:
+    max_attempts: 3
+    backoff_type: "exponential"  # exponential, linear, or fixed
+    
+  # Timeout errors: retry with longer timeout on next attempt
+  timeout_errors:
+    max_attempts: 3
+    increment_timeout: 10  # Add 10 seconds each retry (30 → 40 → 50)
+    
+  # HTTP 403: Try browser fallback or different proxy, max N attempts
+  http_403_errors:
+    max_attempts: 3
+    
+  # HTTP non-200 errors: limited retries
+  http_errors:
+    max_attempts: 1
+
+# Feature flags
+features:
+  use_browser_fallback: true
+
+# Output paths
+output:
+  videos_dir: "videos"
+  images_dir: "images"
