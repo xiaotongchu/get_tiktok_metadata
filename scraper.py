@@ -13,6 +13,7 @@ import asyncio
 import time
 import yaml
 import httpx
+import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 from collections import deque
@@ -36,12 +37,15 @@ class TikTokScraper:
     - Structured retry handling per error type
     """
     
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = "config.yaml", output_dir: str = None):
         """
         Initialize scraper.
         
         Args:
             config_path: Path to configuration YAML file
+            output_dir: Optional output directory (absolute or relative). 
+                       Videos and images directories from config will be resolved relative to this.
+                       If not provided, they're used as-is from config.
         """
         # Load configuration
         with open(config_path, 'r') as f:
@@ -55,10 +59,16 @@ class TikTokScraper:
         )
         self.browser_handler = BrowserHandler(self.config['browser'])
         
-        # Paths
-        self.output = self.config['output']
-        Path(self.output['videos_dir']).mkdir(exist_ok=True)
-        Path(self.output['images_dir']).mkdir(exist_ok=True)
+        # Paths: resolve relative to output_dir if provided
+        self.output = self.config['output'].copy()
+        
+        if output_dir:
+            output_base = Path(output_dir).resolve()
+            self.output['videos_dir'] = str(output_base / self.output['videos_dir'])
+            self.output['images_dir'] = str(output_base / self.output['images_dir'])
+        
+        Path(self.output['videos_dir']).mkdir(parents=True, exist_ok=True)
+        Path(self.output['images_dir']).mkdir(parents=True, exist_ok=True)
         
         # Tracking
         self.results: Dict[str, DownloadResult] = {}
@@ -145,7 +155,7 @@ class TikTokScraper:
             delay = self._calculate_retry_delay(error_type, retry_count)
             return delay, None
     
-    async def fetch_metadata_for_post(self, video_id: str) -> Optional[VideoMetadata]:
+    async def fetch_metadata_for_post(self, video_id: str) -> Tuple[Optional[VideoMetadata], Optional[str]]:
         """
         Fetch metadata for a single post.
         
@@ -153,7 +163,7 @@ class TikTokScraper:
             video_id: TikTok post ID
             
         Returns:
-            VideoMetadata if successful, None if failed
+            Tuple of (VideoMetadata, raw_json_string) if successful, (None, None) if failed
         """
         retry_count = 0
         max_retries = self.config['http_client']['max_retries']
@@ -183,7 +193,7 @@ class TikTokScraper:
                         print(f"   Pool status: {self.proxy_pool.get_pool_status()}")
                         for proxy_url, stats in all_stats.items():
                             print(f"   - {proxy_url}: {stats}")
-                        return None
+                        return None, None
                     
                     # Every 60 checks (~6 seconds), print status
                     if check_count % 60 == 0:
@@ -218,7 +228,7 @@ class TikTokScraper:
                     self.proxy_pool.mark_proxy_success(proxy)
                     self.consecutive_failures = 0
                     print(f"✓ Metadata fetched for {video_id}")
-                    return metadata
+                    return metadata, json.dumps(json_data)
                 
                 except Exception as e:
                     # Classify error and apply appropriate retry strategy
@@ -234,7 +244,7 @@ class TikTokScraper:
                     
                     if retry_count >= max_attempts:
                         print(f"❌ Failed to fetch metadata for {video_id} after {retry_count} retries ({error_type}): {error_msg}")
-                        return None
+                        return None, None
                     
                     # Apply backoff before retry
                     delay, _ = await self._apply_retry_delay(error_type, retry_count, video_id)
@@ -244,17 +254,18 @@ class TikTokScraper:
             
             except Exception as e:
                 print(f"❌ Unexpected error fetching metadata for {video_id}: {e}")
-                return None
+                return None, None
         
-        return None
+        return None, None
     
-    async def download_post(self, video_id: str, metadata: VideoMetadata) -> Optional[DownloadResult]:
+    async def download_post(self, video_id: str, metadata: VideoMetadata, raw_json: Optional[str] = None) -> Optional[DownloadResult]:
         """
         Download media for a post after metadata has been fetched.
         
         Args:
             video_id: TikTok post ID
             metadata: Already-fetched metadata
+            raw_json: Optional raw JSON metadata string
             
         Returns:
             DownloadResult with success/failure info
@@ -262,7 +273,9 @@ class TikTokScraper:
         result = DownloadResult(
             post_id=video_id,
             status=DownloadStatus.DOWNLOADING,
-            metadata=metadata
+            metadata=metadata,
+            used_browser_fallback=False,
+            raw_json=raw_json
         )
         
         retry_count = 0
@@ -339,6 +352,8 @@ class TikTokScraper:
                                 file_result.filename = f"{video_id}.mp4"
                                 file_result.success = True
                                 file_result.error = None
+                                result.used_browser_fallback = True
+                                print(f"✓ Browser fallback succeeded for {video_id}")
                     
                     result.files = [file_result]
                     result.success = file_result.success
@@ -416,9 +431,9 @@ class TikTokScraper:
             print(f"  ⏳ Fetching metadata...")
             metadata_dict = {}
             for video_id in batch_ids:
-                metadata = await self.fetch_metadata_for_post(video_id)
+                metadata, raw_json = await self.fetch_metadata_for_post(video_id)
                 if metadata:
-                    metadata_dict[video_id] = metadata
+                    metadata_dict[video_id] = (metadata, raw_json)
             
             print(f"  ✓ Metadata: {len(metadata_dict)}/{len(batch_ids)} succeeded")
             
@@ -426,8 +441,8 @@ class TikTokScraper:
             if metadata_dict:
                 print(f"  ⏳ Downloading media...")
                 download_tasks = {
-                    video_id: asyncio.create_task(self.download_post(video_id, metadata))
-                    for video_id, metadata in metadata_dict.items()
+                    video_id: asyncio.create_task(self.download_post(video_id, metadata, raw_json))
+                    for video_id, (metadata, raw_json) in metadata_dict.items()
                 }
                 
                 batch_results = []
@@ -444,7 +459,9 @@ class TikTokScraper:
                         result = DownloadResult(
                             post_id=video_id,
                             status=DownloadStatus.FAILED,
-                            error=str(e)
+                            error=str(e),
+                            used_browser_fallback=False,
+                            raw_json=None
                         )
                         batch_results.append(result)
                         all_results.append(result)
@@ -459,7 +476,9 @@ class TikTokScraper:
                     result = DownloadResult(
                         post_id=video_id,
                         status=DownloadStatus.FAILED,
-                        error="Failed to fetch metadata"
+                        error="Failed to fetch metadata",
+                        used_browser_fallback=False,
+                        raw_json=None
                     )
                     all_results.append(result)
                     if on_result_callback:

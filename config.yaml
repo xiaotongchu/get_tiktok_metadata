@@ -19,7 +19,7 @@ proxy_pool:
     - "http://192.168.50.102:5080" # Dublin
   
   # Minimum seconds between proxy reuse attempts
-  throttle_seconds: 2
+  throttle_seconds: 4
 
   # After N consecutive failures on a proxy, mark it "broken"
   failure_threshold: 10
@@ -72,3 +72,7 @@ features:
 output:
   videos_dir: "videos"
   images_dir: "images"
+  csv_filename: "metadata_output.csv"  # Default CSV filename
+  # Optional: add datetime timestamp to csv_filename (e.g., metadata_output_2024-01-15_14-30-45.csv)
+  # Set to true to append timestamp, false or omit for no timestamp
+  csv_timestamp: false

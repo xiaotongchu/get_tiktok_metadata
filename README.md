@@ -246,9 +246,26 @@ python -m playwright install chromium
 
 ### Running
 
-```bash
+<!-- ```bash
 python main_v2.py tiktok_test_data_10.csv --config config.yaml --output-csv metadata_output.csv
-```
+``` -->
+
+# Use current directory
+python main_v2.py input.csv
+
+# Use custom output folder
+python main_v2.py input.csv --output-dir ./results
+
+# Custom CSV filename
+python main_v2.py input.csv --output-dir ./results --csv-filename results.csv
+
+# With timestamp
+python main_v2.py input.csv --output-dir ./results --timestamp
+
+# Override config's csv_filename with timestamp
+python main_v2.py input.csv --output-dir ./results --csv-filename custom.csv --timestamp
+
+
 
 ## Testing Strategy
 

@@ -87,6 +87,7 @@ class MetadataExtractor:
             author_infos = video_data.get("authorInfos", {})
             author_name = author_infos.get("nickName", "")
             author_id = author_infos.get("userId", "")
+            author_verified = author_infos.get("verified", None)
             
             # Extract stats from itemInfos (direct fields)
             stats = VideoStats(
@@ -96,16 +97,25 @@ class MetadataExtractor:
                 comments=item_infos.get("commentCount", 0),
             )
             
+            # Extract sticker texts
+            sticker_texts = MetadataExtractor._extract_sticker_texts(video_data)
+            
+            # Extract is_ad flag
+            is_ad = item_infos.get("isAd", None)
+            
             # Extract basic metadata
             metadata = VideoMetadata(
                 post_id=video_id,
                 description=description,
                 author_name=author_name,
                 author_id=author_id,
+                author_verified=author_verified,
                 create_time=create_time,
                 stats=stats,
                 is_image_post=False,  # Determined later
                 image_count=0,
+                sticker_texts=sticker_texts,
+                is_ad=is_ad,
             )
             
             return metadata
@@ -184,6 +194,37 @@ class MetadataExtractor:
         except (KeyError, TypeError, AttributeError) as e:
             # Silently return None - will check for video as fallback
             return None
+    
+    @staticmethod
+    def _extract_sticker_texts(video_data: Dict[str, Any]) -> str:
+        """
+        Extract all sticker texts from stickerTextList.
+        Replaces newlines with literal \n and joins multiple texts with |.
+        
+        Args:
+            video_data: Video data dictionary
+            
+        Returns:
+            Concatenated sticker texts separated by "|", or empty string if none found
+        """
+        try:
+            sticker_text_list = video_data.get("stickerTextList", [])
+            if not sticker_text_list:
+                return ""
+            
+            all_texts = []
+            for sticker in sticker_text_list:
+                sticker_texts = sticker.get("stickerText", [])
+                for text in sticker_texts:
+                    if text:  # Skip empty texts
+                        # Replace actual newlines with literal \n
+                        normalized_text = text.replace('\n', '\\n').replace('\r\n', '\\n')
+                        all_texts.append(normalized_text)
+            
+            return "|".join(all_texts)
+        
+        except (KeyError, TypeError, AttributeError):
+            return ""
     
     @staticmethod
     def _get_video_data(json_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:

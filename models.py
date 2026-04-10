@@ -34,8 +34,11 @@ class VideoMetadata:
     author_id: str
     create_time: str
     stats: VideoStats
+    author_verified: Optional[bool] = None
     is_image_post: bool = False
     image_count: int = 0
+    sticker_texts: str = ""  # Concatenated sticker texts from stickerTextList
+    is_ad: Optional[bool] = None  # Whether the post is an advertisement
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for CSV output."""
@@ -44,11 +47,14 @@ class VideoMetadata:
             'description': self.description,
             'author_name': self.author_name,
             'author_id': self.author_id,
+            'author_verified': self.author_verified,
             'create_time': self.create_time,
             'views': self.stats.views,
             'likes': self.stats.likes,
             'shares': self.stats.shares,
             'comments': self.stats.comments,
+            'sticker_texts': self.sticker_texts,
+            'is_ad': self.is_ad,
         }
 
 
@@ -70,13 +76,25 @@ class DownloadResult:
     metadata: Optional[VideoMetadata] = None
     files: List[DownloadedFile] = field(default_factory=list)
     error: Optional[str] = None
+    used_browser_fallback: bool = False  # Indicates if browser fallback was used
+    raw_json: Optional[str] = None  # Raw JSON metadata as string
+    download_time: Optional[datetime] = None  # Timestamp when result was recorded
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for CSV output."""
+        # Determine post type
+        if self.metadata:
+            post_type = "image" if self.metadata.is_image_post else "video"
+        else:
+            post_type = "unknown"
+        
         result = {
             'post_id': self.post_id,
+            'type': post_type,
             'downloaded': self.success,
             'error_message': self.error or '',
+            'raw_json': self.raw_json or '',
+            'download_time': self.download_time.isoformat() if self.download_time else '',
         }
         if self.metadata:
             result.update(self.metadata.to_dict())
