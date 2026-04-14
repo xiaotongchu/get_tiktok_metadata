@@ -1,4 +1,4 @@
-# TikTok Scraper (Refactored)
+# TikTok Scraper
 
 > A clean, production-ready TikTok metadata and media scraper with true async concurrency, intelligent proxy rotation, and structured error handling.
 
@@ -12,7 +12,7 @@ This is a complete refactoring of the original TikTok scraper, addressing three 
 
 ### Key Improvements
 
-| Aspect | Original | Refactored |
+| Aspect | Original | v2 (Current) |
 |--------|----------|-----------|
 | **HTTP Library** | `requests` + `FuturesSession` (thread pool) | `httpx` (true async) |
 | **Event Loop** | Polling every 0.1s, O(n) iterations | Event-driven, no polling |
@@ -22,6 +22,9 @@ This is a complete refactoring of the original TikTok scraper, addressing three 
 | **Code Size** | ~650 lines (monolithic) | ~300 lines (modular) |
 | **Error Handling** | Silent failures | Structured retry strategies per error type |
 | **Execution Model** | Serialized phases | Pipelined (metadata + downloads concurrent) |
+| **Logging** | No file logging | ✅ Comprehensive logging to file |
+| **Duplicate Handling** | Append-only | ✅ Smart re-scraping with row updates |
+| **Output Verification** | Limited | ✅ Complete execution history in logs |
 
 ## Architecture
 
@@ -153,13 +156,101 @@ Main orchestrator:
 **Key insight**: Pipelined architecture means metadata fetching and downloading happen in parallel (not serialized phases like original)
 
 ### **main.py** (v2)
-Clean CLI entry point:
+Clean CLI entry point with comprehensive logging and smart re-scraping:
 - Read input CSV
-- Setup scraper with config
-- Run batch scraping
-- Write output CSV
+- Setup comprehensive logging (console + file)
+- Smart duplicate detection with conditional re-scraping
+- Stream results to output CSV as they complete
+- Intelligent error tracking and reporting
 
-**Key insight**: Only ~80 lines vs 150+ in original (no monolithic loop)
+**Key Changes (v2 vs v1)**:
+- ✅ Setup logging → captures print statements, exceptions, and library logs to `terminal_log.txt`
+- ✅ Smart re-scraping → only re-scrape posts where `raw_json` exists but `downloaded=False`
+- ✅ CSV row updates → re-scraped posts have their rows updated (old row removed, new row added)
+- ✅ Preserved skipped rows → posts that don't meet re-scrape criteria are kept in CSV
+- ✅ Logger passed to functions → all output logged to both console and file
+
+**Output Files**:
+- `metadata_output.csv` - All post metadata (new + re-scraped + skipped)
+- `terminal_log.txt` - Complete execution log with timestamps and full exception tracebacks
+- Videos and images directories (configured in `config.yaml`)
+
+## Logging
+
+All execution is logged to `terminal_log.txt` in the output directory:
+
+```
+================================================================================
+RUN STARTED: 2026-04-14 10:30:45
+================================================================================
+🚀 Starting TikTok scraper
+   Input: ../input/tiktok_metadata_extraction_30days.csv
+   Config: config.yaml
+   Output dir: ../output
+   CSV output: ../output/metadata_output.csv
+
+📋 Loaded 100 unique video IDs from ../input/file.csv
+
+📌 Found 50 existing posts in ../output/metadata_output.csv
+   30 new posts to scrape
+   → Post 7490927982085934338 marked for re-scrape (raw_json exists, downloaded=False)
+   → Post 7490927982085934339 marked for re-scrape (raw_json exists, downloaded=False)
+   20 posts to re-scrape (raw_json not empty and not downloaded)
+
+📊 Total posts to process: 50/100
+   (30 new, 20 to re-scrape)
+
+📍 Proxy pool status: 10 proxies (5 active, 3 cooling)
+
+✓ [1] Saved: 7490927982085934338
+✓ [2] Saved: 7490927982085934339
+...
+✓ Done!
+
+📊 Results written to ../output/metadata_output.csv
+   48/50 successful downloads
+   2 failed
+```
+
+**Logged Information**:
+- ✅ Print statements (replace all `print()` with logging)
+- ✅ Uncaught exceptions with full tracebacks
+- ✅ Library logging from dependencies
+- ✅ Progress and status updates
+- ✅ Runs separated by timestamps (appends to file)
+
+## Smart Re-scraping Logic
+
+The scraper intelligently decides which posts to process:
+
+### New Posts (not in output CSV)
+Always scraped ✓
+
+### Existing Posts (in output CSV)
+**Re-scraped only if BOTH conditions are met:**
+1. `raw_json` column is **not empty** (metadata was extracted)
+2. `downloaded` column is **False** (video/images not downloaded)
+
+All other existing posts are **skipped and preserved** in the CSV.
+
+**Example:**
+
+| post_id | raw_json | downloaded | Action |
+|---------|----------|-----------|--------|
+| 123     | {...} | False | ✅ Re-scrape (update row) |
+| 456     | {...} | True | ⏭️ Skip (already done) |
+| 789     | (empty) | False | ⏭️ Skip (no metadata) |
+| 999 | (NULL) | False | ⏭️ Skip (no metadata) |
+| 111 | {...} | (NULL) | ✅ Re-scrape (treat as not downloaded) |
+
+### CSV Row Behavior
+
+**When re-scraping:**
+- Delete old row for that post_id
+- Write new row with fresh results
+- Keep all other rows
+
+**Result:** CSV always contains the latest data for each post_id
 
 ## Execution Flow Comparison
 
@@ -242,39 +333,138 @@ browser:
 ```bash
 pip install pandas httpx pyyaml playwright beautifulsoup4
 python -m playwright install chromium
+sudo apt-get install ca-certificates fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 libc6 libcairo2 libcups2 libdbus-1-3 libexpat1 libfontconfig1 libgbm1 libgcc1 libglib2.0-0 libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 libpangocairo-1.0-0 libstdc++6 libx11-6 libx11-xcb1 libxcb1 xdg-utils
 ```
 
-### Running
+### Running the Scraper
 
-<!-- ```bash
-python main_v2.py tiktok_test_data_10.csv --config config.yaml --output-csv metadata_output.csv
-``` -->
+**Basic usage** (output to `../output/`):
+```bash
+python3 main.py input.csv
+```
 
-# Use current directory
-python main_v2.py input.csv
+**Custom output directory:**
+```bash
+python3 main.py input.csv --output-dir ./results
+```
 
-# Use custom output folder
-python main_v2.py input.csv --output-dir ./results
+**Custom CSV filename:**
+```bash
+python3 main.py input.csv --output-dir ./results --csv-filename results.csv
+```
 
-# Custom CSV filename
-python main_v2.py input.csv --output-dir ./results --csv-filename results.csv
+**Add timestamp to CSV filename:**
+```bash
+python3 main.py input.csv --output-dir ./results --timestamp
+```
 
-# With timestamp
-python main_v2.py input.csv --output-dir ./results --timestamp
+**Override config with timestamp:**
+```bash
+python3 main.py input.csv --output-dir ./results --csv-filename custom.csv --timestamp
+```
 
-# Override config's csv_filename with timestamp
-python main_v2.py input.csv --output-dir ./results --csv-filename custom.csv --timestamp
+### Output Files
+
+After running, check the output directory for:
+
+```
+../output/
+├── metadata_output.csv          ← All metadata (new + re-scraped + skipped)
+├── terminal_log.txt             ← Complete execution log (appended)
+├── videos/                      ← Downloaded TikTok videos
+└── images/                      ← Downloaded carousel images
+```
+
+### Checking the Logs
+
+View the complete execution history:
+```bash
+cat ../output/terminal_log.txt
+```
+
+Or follow live:
+```bash
+tail -f ../output/terminal_log.txt
+```
+
+### Workflow Example
+
+**First run** (fresh start):
+```bash
+python3 main.py input.csv
+# Scrapes all 100 posts
+# Writes 100 rows to metadata_output.csv
+# Logs all output to terminal_log.txt (new file)
+```
+
+**Second run** (same input):
+```bash
+python3 main.py input.csv
+# Finds 100 existing posts in metadata_output.csv
+# Identifies which need re-scraping (raw_json exists but downloaded=False)
+# Re-scrapes only those posts, updates their rows
+# Keeps all other rows (skipped posts)
+# Appends new run to terminal_log.txt with separator
+```
+
+**For partial re-scrape** (manually edit CSV):
+```bash
+# Edit metadata_output.csv:
+# 1. Find a post where downloaded=True
+# 2. Change it to downloaded=False
+# 3. Keep raw_json non-empty
+# 4. Save and run again
+# → That post will be re-scraped and row updated
+```
 
 
 
-## Testing Strategy
+## Testing & Verification
+
+### Check Execution Logs
+
+All execution details are logged to `terminal_log.txt`:
+```bash
+# View full history
+cat ../output/terminal_log.txt
+
+# View only the latest run
+tail -100 ../output/terminal_log.txt
+
+# Search for errors
+grep "❌" ../output/terminal_log.txt
+
+# See which posts were re-scraped
+grep "marked for re-scrape" ../output/terminal_log.txt
+```
+
+### Verify CSV Results
+
+```bash
+# Count total posts
+wc -l ../output/metadata_output.csv
+
+# Check download success rate
+python3 -c "import pandas as pd; df = pd.read_csv('../output/metadata_output.csv'); print(f'Downloaded: {(df[\"downloaded\"]==True).sum()}/{len(df)}')"
+
+# Check which posts failed
+python3 -c "import pandas as pd; df = pd.read_csv('../output/metadata_output.csv'); print(df[df['downloaded']==False][['post_id', 'error_message']].head())"
+
+# Check for posts needing re-scrape
+python3 -c "import pandas as pd; df = pd.read_csv('../output/metadata_output.csv'); rescrape = df[(df['raw_json'].notna()) & (df['raw_json'] != '') & (df['downloaded']==False)]; print(f'Posts to re-scrape: {len(rescrape)}')"
+```
 
 ### Integration Tests
 
 ```bash
-# Verify output matches original
-python main_v2.py tiktok_test_data_10.csv
-# Compare metadata_output.csv with original run
+# Run on test data
+python3 main.py ../input/tiktok_metadata_extraction_30days.csv
+
+# Verify output structure
+python3 -c "import pandas as pd; df = pd.read_csv('../output/metadata_output.csv'); print(f'Columns: {list(df.columns)}')"
+
+# Check for required fields
+python3 -c "import pandas as pd; df = pd.read_csv('../output/metadata_output.csv'); required = ['post_id', 'downloaded', 'raw_json']; print('✓ All required columns present' if all(c in df.columns for c in required) else '✗ Missing columns')"
 ```
 
 ## Error Handling
@@ -300,34 +490,124 @@ python main_v2.py tiktok_test_data_10.csv
 
 ## Deployment
 
-1. Copy all `.py` files and `config.yaml` to server
-2. Install dependencies: `pip install -r requirements.txt`
-3. Download Playwright: `python -m playwright install chromium`
-4. Run: `python main_v2.py input.csv`
+1. **Setup environment**:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   python -m playwright install chromium
+   ```
+
+2. **Prepare config**:
+   - Copy `config.yaml` to your working directory
+   - Adjust proxy list, timeouts, and concurrency as needed
+
+3. **Prepare input data**:
+   - CSV with `post_ID`, `id`, or `post_id` column containing TikTok video IDs
+   - Optional columns: `Link` (URL), `type` ("img" for image posts)
+
+4. **Create output directory**:
+   ```bash
+   mkdir -p ../output
+   ```
+
+5. **Run the scraper**:
+   ```bash
+   python3 main.py input.csv --output-dir ../output
+   ```
+
+6. **Monitor execution**:
+   ```bash
+   tail -f ../output/terminal_log.txt
+   ```
+
+7. **Check results**:
+   ```bash
+   ls -lh ../output/metadata_output.csv
+   head ../output/metadata_output.csv
+   ```
+
+### Production Considerations
+
+- **Error Recovery**: If script crashes mid-run, just re-run with same input → will resume correctly (skips completed posts)
+- **Large Batches**: For 10,000+ posts, consider splitting input into chunks
+- **Proxy Rotation**: Monitor `terminal_log.txt` for proxy health messages
+- **Storage**: Account for ~10-20MB per 100 videos (depends on video length)
 
 ## Troubleshooting
 
-### Proxy issues
-- Check `proxy_pool.get_pool_status()` to see health
+### Posts Not Being Re-scraped
+
+**Issue**: Posts with `raw_json` and `downloaded=False` aren't being re-scraped.
+
+**Diagnosis**:
+1. Check `terminal_log.txt` for re-scraping candidates:
+   ```bash
+   grep "marked for re-scrape" ../output/terminal_log.txt
+   ```
+
+2. Verify post is in input CSV:
+   ```bash
+   grep "7490927982085934338" ../input/tiktok_metadata_extraction_30days.csv
+   ```
+
+3. Check raw_json format (not null/empty):
+   ```bash
+   python3 -c "import pandas as pd; df = pd.read_csv('../output/metadata_output.csv'); post = df[df['post_id']=='7490927982085934338'].iloc[0]; print(f'Has raw_json: {pd.notna(post[\"raw_json\"])}'); print(f'Downloaded: {post[\"downloaded\"]}')"
+   ```
+
+### Logs Not Being Generated
+
+**Issue**: `terminal_log.txt` file is missing or not updating.
+
+**Solutions**:
+- Check output directory exists: `ls -la ../output/`
+- Verify write permissions: `touch ../output/test.txt`
+- Check for exceptions in console output (now should be in log)
+
+### CSV Rows Being Deleted
+
+**Issue**: After re-running, some rows from first run are gone.
+
+**Root cause**: If a post was marked for re-scrape but had an error, the old row is deleted and nothing written (no callback).
+
+**Workaround**: Check `terminal_log.txt` for which posts failed during re-scrape attempt.
+
+### Proxy Issues
+- Check `proxy_pool.get_pool_status()` info in logs
 - Increase `failure_threshold` if proxies are too aggressive
 - Adjust `backoff_factor` for gentler backoff
 
-### Metadata not found
+### Metadata Not Found
+- Check `terminal_log.txt` for extraction errors
 - Check if TikTok changed JSON structure (try selectors in `MetadataExtractor.JSON_SCRIPT_SELECTORS`)
 - Some posts require login → validation catches these
 
-### Image download failures
+### Image Download Failures
 - Reduce `max_concurrent_images` if server throttles
 - Check image URLs are valid (browser opens in embed page)
+- Check `terminal_log.txt` for download errors
+
+## Recently Implemented (v2)
+
+- ✅ **Comprehensive Logging** - All output (print, exceptions, library logs) captured to `terminal_log.txt`
+- ✅ **Smart Re-scraping** - Conditional re-scrape based on `raw_json` and `downloaded` status
+- ✅ **CSV Row Updates** - Re-scraped posts have rows deleted and replaced with fresh data
+- ✅ **Preserved Skipped Rows** - Non-matching posts kept in CSV across runs
+- ✅ **Run Separators** - Each execution marked with timestamp in log file
+- ✅ **Streaming CSV Writes** - Results written immediately as they complete
+- ✅ **Full Tracebacks** - Uncaught exceptions logged with complete stack traces
 
 ## Future Improvements
 
 1. **Persistent browser instance** for browser_handler (reuse across downloads)
 2. **Rate limiting** per proxy (adaptive based on 429 responses)
 3. **Retry-After header** support for backoff decisions
-4. **Streaming CSV writes** (write results as they complete, not at end)
-5. **Metrics collection** (Prometheus exporter for monitoring)
-6. **Distributed proxy pool** (Redis-backed for multi-worker setups)
+4. **Metrics collection** (Prometheus exporter for monitoring)
+5. **Distributed proxy pool** (Redis-backed for multi-worker setups)
+6. **Log rotation** - Automatic archival of old terminal_log.txt files
+7. **Partial CSV recovery** - Better handling of mid-run failures
+8. **Progress bar** - Visual indication of batch progress
 
 ## License
 

@@ -16,7 +16,6 @@ proxy_pool:
   proxies:
     - "__localhost__"  # Use local network (no proxy)
     # Add your proxies below:
-    - "http://192.168.50.102:5080" # Dublin
   
   # Minimum seconds between proxy reuse attempts
   throttle_seconds: 4
