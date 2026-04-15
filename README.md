@@ -177,47 +177,14 @@ Clean CLI entry point with comprehensive logging and smart re-scraping:
 
 ## Logging
 
-All execution is logged to `terminal_log.txt` in the output directory:
+All execution is logged to `terminal_log.txt` in the output directory with:
+- Timestamp and run separators for each execution
+- Progress updates and status information
+- Print statements from all phases
+- Uncaught exceptions with full tracebacks
+- Library logging from dependencies
 
-```
-================================================================================
-RUN STARTED: 2026-04-14 10:30:45
-================================================================================
-🚀 Starting TikTok scraper
-   Input: ../input/tiktok_metadata_extraction_30days.csv
-   Config: config.yaml
-   Output dir: ../output
-   CSV output: ../output/metadata_output.csv
 
-📋 Loaded 100 unique video IDs from ../input/file.csv
-
-📌 Found 50 existing posts in ../output/metadata_output.csv
-   30 new posts to scrape
-   → Post 7490927982085934338 marked for re-scrape (raw_json exists, downloaded=False)
-   → Post 7490927982085934339 marked for re-scrape (raw_json exists, downloaded=False)
-   20 posts to re-scrape (raw_json not empty and not downloaded)
-
-📊 Total posts to process: 50/100
-   (30 new, 20 to re-scrape)
-
-📍 Proxy pool status: 10 proxies (5 active, 3 cooling)
-
-✓ [1] Saved: 7490927982085934338
-✓ [2] Saved: 7490927982085934339
-...
-✓ Done!
-
-📊 Results written to ../output/metadata_output.csv
-   48/50 successful downloads
-   2 failed
-```
-
-**Logged Information**:
-- ✅ Print statements (replace all `print()` with logging)
-- ✅ Uncaught exceptions with full tracebacks
-- ✅ Library logging from dependencies
-- ✅ Progress and status updates
-- ✅ Runs separated by timestamps (appends to file)
 
 ## Smart Re-scraping Logic
 
@@ -237,11 +204,11 @@ All other existing posts are **skipped and preserved** in the CSV.
 
 | post_id | raw_json | downloaded | Action |
 |---------|----------|-----------|--------|
-| 123     | {...} | False | ✅ Re-scrape (update row) |
-| 456     | {...} | True | ⏭️ Skip (already done) |
-| 789     | (empty) | False | ⏭️ Skip (no metadata) |
-| 999 | (NULL) | False | ⏭️ Skip (no metadata) |
-| 111 | {...} | (NULL) | ✅ Re-scrape (treat as not downloaded) |
+| ABC123  | {...} | False | ✅ Re-scrape (update row) |
+| DEF456  | {...} | True | ⏭️ Skip (already done) |
+| GHI789  | (empty) | False | ⏭️ Skip (no metadata) |
+| JKL999 | (NULL) | False | ⏭️ Skip (no metadata) |
+| MNO111 | {...} | (NULL) | ✅ Re-scrape (treat as not downloaded) |
 
 ### CSV Row Behavior
 
@@ -392,15 +359,15 @@ tail -f ../output/terminal_log.txt
 **First run** (fresh start):
 ```bash
 python3 main.py input.csv
-# Scrapes all 100 posts
-# Writes 100 rows to metadata_output.csv
+# Scrapes all new posts from input
+# Writes metadata rows to metadata_output.csv
 # Logs all output to terminal_log.txt (new file)
 ```
 
-**Second run** (same input):
+**Subsequent runs** (same input):
 ```bash
 python3 main.py input.csv
-# Finds 100 existing posts in metadata_output.csv
+# Finds existing posts in metadata_output.csv
 # Identifies which need re-scraping (raw_json exists but downloaded=False)
 # Re-scrapes only those posts, updates their rows
 # Keeps all other rows (skipped posts)
