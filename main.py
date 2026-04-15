@@ -56,8 +56,7 @@ def setup_logging(output_dir: Path) -> logging.Logger:
     """
     logger = logging.getLogger('tiktok_scraper')
     logger.setLevel(logging.DEBUG)
-    
-    # Remove existing handlers to avoid duplicates
+    logger.propagate = False  # Prevent duplicate logging to root logger
     logger.handlers.clear()
     
     # Create formatters
@@ -84,6 +83,11 @@ def setup_logging(output_dir: Path) -> logging.Logger:
     if not root_logger.handlers:
         root_logger.addHandler(console_handler)
         root_logger.addHandler(file_handler)
+    
+    # Suppress verbose httpx/httpcore request traces to just show application logs
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('httpcore').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
     
     # Redirect stdout and stderr to logger
     sys.stdout = LoggerWriter(logger, logging.INFO)
