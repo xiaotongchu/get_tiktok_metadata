@@ -6,22 +6,27 @@ http_client:
   connect_timeout: 8
   max_retries: 3
   backoff_factor: 1.0  # Exponential backoff multiplier (1s, 2s, 4s, etc.)
+  max_retry_delay: 30  # Max seconds between retry attempts
 
 # Scraper execution settings
 scraper:
-  batch_size: 4  # Process N posts at a time (fetch metadata -> download -> write -> next batch)
+  batch_size: 5  # Process N posts at a time (fetch metadata -> download -> write -> next batch)
 
 # Proxy pool configuration
 proxy_pool:
   proxies:
     - "__localhost__"  # Use local network (no proxy)
     # Add your proxies below:
+
   
   # Minimum seconds between proxy reuse attempts
   throttle_seconds: 4
 
   # After N consecutive failures on a proxy, mark it "broken"
   failure_threshold: 10
+  
+  # After N seconds, attempt to re-enable a broken proxy (circuit breaker recovery)
+  broken_proxy_recovery_timeout: 300  # 5 minutes
 
 # Media download settings
 media_download:
@@ -32,8 +37,8 @@ media_download:
   image_timeout: 30
   
   # Download in parallel
-  max_concurrent_images: 3  # Parallel image downloads per post
-  max_concurrent_downloads: 5  # Overall concurrent downloads
+  max_concurrent_images: 5  # Parallel image downloads per post
+  max_concurrent_downloads: 8  # Overall concurrent downloads
 
 # Browser fallback (Playwright)
 browser:
@@ -42,6 +47,8 @@ browser:
   timeout: 40  # Seconds to wait for video src update in browser
   navigate_timeout: 30
   wait_for_video_timeout: 12
+  # Browser pool for fallback downloads with proxy support
+  max_pool_size: 3  # Max concurrent browser instances (default 3, one per proxy)
 
 # Retry strategies
 retry:

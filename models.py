@@ -114,12 +114,14 @@ class ProxyStats:
     cooldown_until: float = 0.0  # Unix timestamp when cooldown expires
     cooldown_duration: float = 2.0  # Current cooldown (exponential backoff)
     is_broken: bool = False  # Circuit breaker: too many failures
+    broken_since: Optional[float] = None  # Unix timestamp when marked broken
     
     def reset(self) -> None:
         """Reset proxy state after successful use."""
         self.failure_count = 0
         self.cooldown_duration = 2.0
         self.is_broken = False
+        self.broken_since = None
     
     def mark_failure(self, new_cooldown: float) -> None:
         """Mark a failure and apply cooldown."""

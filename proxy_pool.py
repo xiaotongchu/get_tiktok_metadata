@@ -34,6 +34,21 @@ class ProxyPool:
             self.proxy_stats[proxy_url] = stats
             self.available_queue.append(proxy_url)
     
+    def _attempt_broken_proxy_recovery(self) -> None:
+        """
+        Check if any broken proxies should be recovered (circuit breaker recovery).
+        Called periodically to attempt re-enabling proxies that have been broken.
+        """
+        current_time = time.time()
+        recovery_timeout = self.config.get('broken_proxy_recovery_timeout', 300)
+        
+        for proxy_url, stats in self.proxy_stats.items():
+            if stats.is_broken and stats.broken_since:
+                time_since_broken = current_time - stats.broken_since
+                if time_since_broken > recovery_timeout:
+                    print(f"🔄 Circuit breaker recovery: re-enabling {proxy_url} after {time_since_broken:.1f}s")
+                    stats.reset()  # This clears is_broken and broken_since
+    
     def get_available_proxy(self) -> Optional[str]:
         """
         Get next available proxy in O(1) time by checking available_queue.
@@ -42,6 +57,9 @@ class ProxyPool:
             Proxy URL or None if no proxy available
         """
         current_time = time.time()
+        
+        # Attempt circuit breaker recovery for broken proxies
+        self._attempt_broken_proxy_recovery()
         
         # Drain queue, checking each proxy until we find an available one
         checked = 0
@@ -117,6 +135,15 @@ class ProxyPool:
         # Put proxy back in available queue
         self.available_queue.append(proxy_url)
     
+    def _count_non_broken_proxies(self) -> int:
+        """
+        Count how many proxies are not marked as broken.
+        
+        Returns:
+            Number of non-broken proxies
+        """
+        return sum(1 for stats in self.proxy_stats.values() if not stats.is_broken)
+    
     def mark_proxy_failure(self, proxy_url: str, error_type: str = "connection") -> None:
         """
         Mark a proxy request as failed and apply exponential backoff.
@@ -139,11 +166,18 @@ class ProxyPool:
         # Release proxy (set busy=False so it can be retried)
         stats.busy = False
         
-        # Check if proxy should be marked "broken"
+        # Check if proxy should be marked "broken" (but only if we have other proxies)
         failure_threshold = self.config.get('failure_threshold', 5)
+        non_broken_count = self._count_non_broken_proxies()
+        
         if stats.failure_count >= failure_threshold:
-            stats.is_broken = True
-            print(f"⚠️  Proxy {proxy_url} marked broken after {stats.failure_count} failures")
+            # Don't mark broken if this is the only non-broken proxy left
+            if non_broken_count > 1:
+                stats.is_broken = True
+                stats.broken_since = time.time()  # Record when broken for recovery timeout
+                print(f"⚠️  Proxy {proxy_url} marked broken after {stats.failure_count} failures")
+            else:
+                print(f"⚠️  Proxy {proxy_url}: {stats.failure_count} failures, but keeping active (only proxy available)")
         
         print(f"📍 Proxy {proxy_url}: failed (attempt {stats.failure_count}), "
               f"cooldown {stats.cooldown_duration:.1f}s")

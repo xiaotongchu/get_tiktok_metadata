@@ -212,7 +212,7 @@ class StreamingCSVWriter:
         
         Args:
             output_path: Path to output CSV file
-            posts_to_update: Set of post_ids that are being re-scraped/updated
+            posts_to_update: Deprecated, not used (kept for compatibility)
         """
         self.output_path = output_path
         self.file = None
@@ -222,42 +222,20 @@ class StreamingCSVWriter:
         self.total_written = 0
         self.file_exists = Path(output_path).exists()
         self.is_new_file = not self.file_exists
-        self.posts_to_update = posts_to_update or set()
-        
-        # Load existing data if file exists
-        self.existing_data = None
-        self.rows_to_keep = []
-        if self.file_exists:
-            try:
-                self.existing_data = pd.read_csv(output_path)
-                if self.posts_to_update:
-                    # Keep all rows except those we're updating
-                    self.rows_to_keep = self.existing_data[
-                        ~self.existing_data['post_id'].astype(str).isin(self.posts_to_update)
-                    ].to_dict('records')
-                else:
-                    # If not updating any posts, keep all existing rows
-                    self.rows_to_keep = self.existing_data.to_dict('records')
-            except Exception:
-                self.rows_to_keep = []
     
     def _initialize_writer(self) -> None:
-        """Initialize the CSV writer and handle existing data if updating posts."""
+        """Initialize the CSV writer and append to existing file or create new one."""
         if self.writer_initialized:
             return
         
-        # Open file in write mode (we'll rewrite all data if updating)
-        self.file = open(self.output_path, 'w', newline='', encoding='utf-8')
+        # Open file in append mode if it exists, otherwise write mode to create with header
+        mode = 'a' if self.file_exists else 'w'
+        self.file = open(self.output_path, mode, newline='', encoding='utf-8')
         self.writer = csv.DictWriter(self.file, fieldnames=self.fieldnames)
         
-        # Always write header
-        self.writer.writeheader()
-        
-        # Write back existing rows that we're keeping
-        if self.rows_to_keep:
-            for row in self.rows_to_keep:
-                self.writer.writerow(row)
-                self.total_written += 1
+        # Write header only if creating a new file
+        if not self.file_exists:
+            self.writer.writeheader()
         
         self.writer_initialized = True
         self.file.flush()
@@ -381,8 +359,8 @@ async def get_scraping_candidates(
     Determine which videos to scrape.
     
     Logic:
-    - New videos (not in output): Always scrape
-    - Existing videos (in output): Only re-scrape if raw_json is not empty AND downloaded is False
+    - New videos (not in output): Scrape
+    - Existing videos (in output): Skip (resume by appending to file)
     
     Args:
         output_path: Path to output CSV file
@@ -392,7 +370,7 @@ async def get_scraping_candidates(
     Returns:
         Tuple of (videos_to_process, posts_to_update)
         - videos_to_process: List of video IDs to scrape
-        - posts_to_update: Set of post_ids being re-scraped (for updating existing rows)
+        - posts_to_update: Empty set (no updates needed with append-only mode)
     """
     if not Path(output_path).exists():
         log_message(logger, f"📌 No existing output file found, all posts will be scraped")
@@ -408,34 +386,11 @@ async def get_scraping_candidates(
         existing_post_ids = set(str(pid) for pid in df['post_id'].unique())
         new_video_ids = [vid for vid in input_video_ids if vid not in existing_post_ids]
         
-        # Find candidates for re-scraping:
-        # raw_json is not empty AND downloaded is False
-        rescrape_candidates = []
-        
-        for _, row in df.iterrows():
-            post_id = str(row['post_id'])
-            if post_id in input_video_ids:  # Only consider if in input list
-                raw_json = row.get('raw_json', '')
-                downloaded = row.get('downloaded', False)
-                
-                # Check conditions: raw_json not empty and downloaded is False
-                has_raw_json = pd.notna(raw_json) and str(raw_json).strip() != ''
-                is_not_downloaded = pd.isna(downloaded) or str(downloaded).lower() in ['false', '0']
-                
-                if has_raw_json and is_not_downloaded:
-                    rescrape_candidates.append(post_id)
-                    log_message(logger, f"   → Post {post_id} marked for re-scrape (raw_json exists, downloaded=False)")
-        
-        videos_to_process = new_video_ids + rescrape_candidates
-        posts_to_update = set(rescrape_candidates)
-        
         log_message(logger, f"📌 Found {len(existing_post_ids)} existing posts in {output_path}")
         if len(new_video_ids) > 0:
             log_message(logger, f"   {len(new_video_ids)} new posts to scrape")
-        if len(rescrape_candidates) > 0:
-            log_message(logger, f"   {len(rescrape_candidates)} posts to re-scrape (raw_json not empty and not downloaded)")
         
-        return videos_to_process, posts_to_update
+        return new_video_ids, set()
         
     except Exception as e:
         log_message(logger, f"⚠️  Could not load existing output: {e}")
@@ -503,6 +458,7 @@ async def main():
         description='TikTok metadata scraper (refactored clean version)\n'
                     'Downloads TikTok videos/images and extracts metadata.'
     )
+    
     parser.add_argument('input_csv', help='Input CSV file with video IDs')
     parser.add_argument('--config', default='config.yaml', help='Configuration file')
     parser.add_argument('--output-dir', default='../output', help='Output directory (relative or absolute path)')
@@ -549,12 +505,10 @@ async def main():
         )
         
         if videos_to_process:
-            log_message(logger, f"📊 Total posts to process: {len(videos_to_process)}/{len(video_ids)}")
-            if len(posts_to_update) > 0:
-                log_message(logger, f"   ({len(videos_to_process) - len(posts_to_update)} new, {len(posts_to_update)} to re-scrape)")
+            log_message(logger, f"📊 Total posts to process: {len(videos_to_process)}/{len(video_ids)} (new posts)")
             log_message(logger, "")
         else:
-            log_message(logger, f"✓ All {len(video_ids)} posts already processed and meet criteria!")
+            log_message(logger, f"✓ All {len(video_ids)} posts already in output file!")
             log_message(logger, f"   Remove or rename {csv_output_path} to start fresh.")
             return
         

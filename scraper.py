@@ -8,6 +8,7 @@ Key differences from original:
 - Intelligent proxy pool with exponential backoff and circuit breaker
 - Parallel image downloads
 - Structured error handling with retry strategies
+- Browser pool for headless fallback with proxy support
 """
 import asyncio
 import time
@@ -24,6 +25,7 @@ from http_client import TikTokHTTPClient
 from metadata_extractor import MetadataExtractor
 from media_downloader import MediaDownloader
 from browser_handler import BrowserHandler
+from browser_pool import BrowserPool
 
 
 class TikTokScraper:
@@ -58,6 +60,14 @@ class TikTokScraper:
             self.config['proxy_pool']
         )
         self.browser_handler = BrowserHandler(self.config['browser'])
+        
+        # Initialize browser pool (not yet started - will be initialized in scrape_batch)
+        max_browser_pool_size = self.config.get('browser', {}).get('max_pool_size', 3)
+        self.browser_pool = BrowserPool(
+            self.config['proxy_pool']['proxies'],
+            self.config['browser'],
+            max_browsers=max_browser_pool_size
+        )
         
         # Paths: resolve relative to output_dir if provided
         self.output = self.config['output'].copy()
@@ -102,9 +112,9 @@ class TikTokScraper:
             # Always same delay
             delay = base_delay
         
-        # Don't exceed max configured timeout
-        max_timeout = self.config['http_client'].get('timeout', 30)
-        return min(delay, max_timeout)
+        # Cap at max_retry_delay (default 60s) to avoid excessive waits
+        max_retry_delay = self.config['http_client'].get('max_retry_delay', 60)
+        return min(delay, max_retry_delay)
     
     def _get_error_type(self, error: Exception) -> str:
         """
@@ -258,7 +268,30 @@ class TikTokScraper:
         
         return None, None
     
-    async def download_post(self, video_id: str, metadata: VideoMetadata, raw_json: Optional[str] = None) -> Optional[DownloadResult]:
+    async def _mark_proxy_failure_with_cleanup(self, proxy: str, error_type: str) -> None:
+        """
+        Mark proxy as failed and cleanup associated browser if it becomes broken.
+        
+        Args:
+            proxy: Proxy URL
+            error_type: Type of error
+        """
+        # Get the proxy stats before marking failure
+        proxy_stats_before = self.proxy_pool.proxy_stats.get(proxy)
+        is_broken_before = proxy_stats_before.is_broken if proxy_stats_before else False
+        
+        # Mark the proxy as failed
+        self.proxy_pool.mark_proxy_failure(proxy, error_type)
+        
+        # Check if proxy was just marked as broken
+        proxy_stats_after = self.proxy_pool.proxy_stats.get(proxy)
+        is_broken_now = proxy_stats_after.is_broken if proxy_stats_after else False
+        
+        if not is_broken_before and is_broken_now:
+            # Proxy just became broken, remove its browser
+            await self.browser_pool.remove_browser_for_proxy(proxy)
+    
+    async def download_post(self, video_id: str, metadata: VideoMetadata, raw_json: Optional[str] = None, browser_pool: Optional[BrowserPool] = None) -> Optional[DownloadResult]:
         """
         Download media for a post after metadata has been fetched.
         
@@ -266,6 +299,7 @@ class TikTokScraper:
             video_id: TikTok post ID
             metadata: Already-fetched metadata
             raw_json: Optional raw JSON metadata string
+            browser_pool: Optional BrowserPool for headless fallback with proxies
             
         Returns:
             DownloadResult with success/failure info
@@ -325,6 +359,8 @@ class TikTokScraper:
                         print(f"⚠️  No images or video URL found for {video_id}")
                         raise ValueError("Post has neither images nor video")
                     
+                    print(f"   📹 Video URL: {video_url[:80]}..." if len(video_url) > 80 else f"   📹 Video URL: {video_url}")
+                    
                     # Try to download video
                     file_result = await MediaDownloader.download_video(
                         self.http_client,
@@ -334,26 +370,41 @@ class TikTokScraper:
                         proxy=proxy_url
                     )
                     
+                    if not file_result.success:
+                        print(f"⚠️  HTTP download failed for {video_id}: {file_result.error}")
+                    
                     if not file_result.success and "HTTP 403" in (file_result.error or ""):
-                        # Try browser fallback
-                        if self.config['features'].get('use_browser_fallback', True):
-                            print(f"🌐 Attempting browser fallback for {video_id}...")
+                        # Try browser fallback with proxy support
+                        if self.config['features'].get('use_browser_fallback', True) and browser_pool:
+                            print(f"🌐 Attempting browser fallback for {video_id} with proxy support...")
                             embed_url = f"https://www.tiktok.com/embed/v2/{video_id}"
-                            src_url, video_data = await self.browser_handler.fetch_video_src_with_browser(
-                                embed_url,
-                                video_id
-                            )
                             
-                            if video_data:
-                                filepath = Path(self.output['videos_dir']) / f"{video_id}.mp4"
-                                with open(filepath, "wb") as f:
-                                    f.write(video_data)
-                                
-                                file_result.filename = f"{video_id}.mp4"
-                                file_result.success = True
-                                file_result.error = None
-                                result.used_browser_fallback = True
-                                print(f"✓ Browser fallback succeeded for {video_id}")
+                            # Get browser from pool for this proxy
+                            browser = await browser_pool.get_browser_for_proxy(proxy)
+                            
+                            if browser:
+                                try:
+                                    src_url, video_data = await self.browser_handler.fetch_video_src_with_browser(
+                                        embed_url,
+                                        video_id,
+                                        browser=browser,
+                                        proxy=proxy
+                                    )
+                                    
+                                    if video_data:
+                                        filepath = Path(self.output['videos_dir']) / f"{video_id}.mp4"
+                                        with open(filepath, "wb") as f:
+                                            f.write(video_data)
+                                        
+                                        file_result.filename = f"{video_id}.mp4"
+                                        file_result.success = True
+                                        file_result.error = None
+                                        result.used_browser_fallback = True
+                                        print(f"✓ Browser fallback succeeded for {video_id}")
+                                finally:
+                                    browser_pool.release_browser(proxy)
+                            else:
+                                print(f"⚠️  Browser pool: No browser available for {proxy}")
                     
                     result.files = [file_result]
                     result.success = file_result.success
@@ -364,7 +415,7 @@ class TikTokScraper:
                     result.status = DownloadStatus.SUCCESS
                     return result
                 else:
-                    self.proxy_pool.mark_proxy_failure(proxy, "download_failed")
+                    await self._mark_proxy_failure_with_cleanup(proxy, "download_failed")
                     retry_count += 1
             
             except Exception as e:
@@ -374,7 +425,7 @@ class TikTokScraper:
                 max_attempts = retry_config.get('max_attempts', 3)
                 
                 if proxy:
-                    self.proxy_pool.mark_proxy_failure(proxy, error_type)
+                    await self._mark_proxy_failure_with_cleanup(proxy, error_type)
                 
                 self.consecutive_failures += 1
                 retry_count += 1
@@ -412,90 +463,101 @@ class TikTokScraper:
         Returns:
             List of all DownloadResult objects
         """
+        # Initialize browser pool at start of scrape batch
+        await self.browser_pool.initialize()
+        print(f"🌐 Browser pool: {self.browser_pool.get_pool_status()}")
+        
         batch_size = self.config.get('scraper', {}).get('batch_size', 10)
         all_results = []
         total = len(video_ids)
         
         print(f"\n📥 Processing {total} videos in batches of {batch_size}...")
         
-        # Process videos in micro-batches
-        for batch_start in range(0, total, batch_size):
-            batch_end = min(batch_start + batch_size, total)
-            batch_ids = video_ids[batch_start:batch_end]
-            batch_num = (batch_start // batch_size) + 1
-            total_batches = (total + batch_size - 1) // batch_size
-            
-            print(f"\n[Batch {batch_num}/{total_batches}] Processing {len(batch_ids)} videos (IDs {batch_start+1}-{batch_end})...")
-            
-            # Phase 1: Fetch metadata for this batch
-            print(f"  ⏳ Fetching metadata...")
-            metadata_dict = {}
-            for video_id in batch_ids:
-                metadata, raw_json = await self.fetch_metadata_for_post(video_id)
-                if metadata:
-                    metadata_dict[video_id] = (metadata, raw_json)
-            
-            print(f"  ✓ Metadata: {len(metadata_dict)}/{len(batch_ids)} succeeded")
-            
-            # Phase 2: Download media for this batch (in parallel)
-            if metadata_dict:
-                print(f"  ⏳ Downloading media...")
-                download_tasks = {
-                    video_id: asyncio.create_task(self.download_post(video_id, metadata, raw_json))
-                    for video_id, (metadata, raw_json) in metadata_dict.items()
-                }
+        try:
+            # Process videos in micro-batches
+            for batch_start in range(0, total, batch_size):
+                batch_end = min(batch_start + batch_size, total)
+                batch_ids = video_ids[batch_start:batch_end]
+                batch_num = (batch_start // batch_size) + 1
+                total_batches = (total + batch_size - 1) // batch_size
                 
-                batch_results = []
+                print(f"\n[Batch {batch_num}/{total_batches}] Processing {len(batch_ids)} videos (IDs {batch_start+1}-{batch_end})...")
                 
-                # Collect download results
-                for video_id, task in download_tasks.items():
-                    try:
-                        result = await task
-                        batch_results.append(result)
-                        all_results.append(result)
-                        if on_result_callback:
-                            on_result_callback(result)
-                    except Exception as e:
+                # Phase 1: Fetch metadata for this batch
+                print(f"  ⏳ Fetching metadata...")
+                metadata_dict = {}
+                for video_id in batch_ids:
+                    metadata, raw_json = await self.fetch_metadata_for_post(video_id)
+                    if metadata:
+                        metadata_dict[video_id] = (metadata, raw_json)
+                
+                print(f"  ✓ Metadata: {len(metadata_dict)}/{len(batch_ids)} succeeded")
+                
+                # Phase 2: Download media for this batch (in parallel)
+                if metadata_dict:
+                    print(f"  ⏳ Downloading media...")
+                    download_tasks = {
+                        video_id: asyncio.create_task(self.download_post(video_id, metadata, raw_json, self.browser_pool))
+                        for video_id, (metadata, raw_json) in metadata_dict.items()
+                    }
+                    
+                    batch_results = []
+                    
+                    # Collect download results
+                    for video_id, task in download_tasks.items():
+                        try:
+                            result = await task
+                            batch_results.append(result)
+                            all_results.append(result)
+                            if on_result_callback:
+                                on_result_callback(result)
+                        except Exception as e:
+                            result = DownloadResult(
+                                post_id=video_id,
+                                status=DownloadStatus.FAILED,
+                                error=str(e),
+                                used_browser_fallback=False,
+                                raw_json=None
+                            )
+                            batch_results.append(result)
+                            all_results.append(result)
+                            if on_result_callback:
+                                on_result_callback(result)
+                    
+                    print(f"  ✓ Downloads: {len(batch_results)} completed")
+                
+                # Record failures for posts with no metadata in this batch
+                for video_id in batch_ids:
+                    if video_id not in metadata_dict and not any(r.post_id == video_id for r in all_results):
                         result = DownloadResult(
                             post_id=video_id,
                             status=DownloadStatus.FAILED,
-                            error=str(e),
+                            error="Failed to fetch metadata",
                             used_browser_fallback=False,
                             raw_json=None
                         )
-                        batch_results.append(result)
                         all_results.append(result)
                         if on_result_callback:
                             on_result_callback(result)
                 
-                print(f"  ✓ Downloads: {len(batch_results)} completed")
+                # Phase 3: Clear memory before next batch
+                del metadata_dict
+                del download_tasks
+                print(f"  ✓ Batch complete. Memory cleared.")
             
-            # Record failures for posts with no metadata in this batch
-            for video_id in batch_ids:
-                if video_id not in metadata_dict and not any(r.post_id == video_id for r in all_results):
-                    result = DownloadResult(
-                        post_id=video_id,
-                        status=DownloadStatus.FAILED,
-                        error="Failed to fetch metadata",
-                        used_browser_fallback=False,
-                        raw_json=None
-                    )
-                    all_results.append(result)
-                    if on_result_callback:
-                        on_result_callback(result)
-            
-            # Phase 3: Clear memory before next batch
-            del metadata_dict
-            del download_tasks
-            print(f"  ✓ Batch complete. Memory cleared.")
+            print(f"\n✓ Scraping complete: {len(all_results)}/{total} results")
         
-        print(f"\n✓ Scraping complete: {len(all_results)}/{total} results")
+        finally:
+            # Always close browser pool when done
+            await self.browser_pool.close_all()
+        
         return all_results
     
     async def close(self):
         """Clean up resources."""
         await self.http_client.close()
         await self.browser_handler.close()
+        await self.browser_pool.close_all()
     
     async def __aenter__(self):
         """Async context manager entry."""
