@@ -47,8 +47,8 @@ media_download:
 browser:
   enabled: true
   headless: true
-  timeout: 40  # Seconds to wait for video src update in browser
-  navigate_timeout: 30
+  timeout: 16  # Seconds to wait for video src update in browser
+  navigate_timeout: 16
   wait_for_video_timeout: 12
   # Browser pool for fallback downloads with proxy support
   max_pool_size: 3  # Max concurrent browser instances (default 3, one per proxy)
