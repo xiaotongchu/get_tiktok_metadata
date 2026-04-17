@@ -20,7 +20,7 @@ proxy_pool:
 
 
   # Minimum seconds between proxy reuse attempts
-  throttle_seconds: 4
+  throttle_seconds: 2
 
   # Seconds to wait before retrying a failed proxy
   proxy_failure_timeout: 10  
