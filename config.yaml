@@ -18,9 +18,12 @@ proxy_pool:
     - "__localhost__"  # Use local network (no proxy)
     # Add your proxies below:
 
-  
+
   # Minimum seconds between proxy reuse attempts
   throttle_seconds: 4
+
+  # Seconds to wait before retrying a failed proxy
+  proxy_failure_timeout: 10  
 
   # After N consecutive failures on a proxy, mark it "broken"
   failure_threshold: 10

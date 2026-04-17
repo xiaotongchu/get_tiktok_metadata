@@ -146,7 +146,7 @@ class ProxyPool:
     
     def mark_proxy_failure(self, proxy_url: str, error_type: str = "connection") -> None:
         """
-        Mark a proxy request as failed and apply exponential backoff.
+        Mark a proxy request as failed and apply cooldown.
         
         Args:
             proxy_url: The proxy that failed
@@ -157,11 +157,10 @@ class ProxyPool:
         
         stats = self.proxy_stats[proxy_url]
         
-        # Calculate new cooldown (exponential backoff)
-        backoff_factor = self.config.get('backoff_factor', 2.0)
-        new_cooldown = stats.cooldown_duration * backoff_factor
+        # Use a fixed cooldown timeout (no accumulation)
+        fixed_cooldown = self.config.get('proxy_failure_timeout', 2.0)
         
-        stats.mark_failure(new_cooldown)
+        stats.mark_failure(fixed_cooldown)
         
         # Release proxy (set busy=False so it can be retried)
         stats.busy = False
