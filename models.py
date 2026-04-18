@@ -1,6 +1,7 @@
 """
 Data models for TikTok scraper using Pydantic for type safety and validation.
 """
+import time
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -126,8 +127,8 @@ class ProxyStats:
     def mark_failure(self, new_cooldown: float) -> None:
         """Mark a failure and apply cooldown."""
         self.failure_count += 1
-        self.cooldown_duration = min(new_cooldown, 300.0)  # Cap at 5 minutes
-        self.cooldown_until = datetime.now().timestamp() + self.cooldown_duration
+        self.cooldown_duration = new_cooldown
+        self.cooldown_until = time.time() + self.cooldown_duration
         
     def is_available(self, current_time: float) -> bool:
         """Check if proxy is available for use."""

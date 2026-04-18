@@ -314,13 +314,23 @@ class TikTokScraper:
         
         retry_count = 0
         max_retries = self.config['http_client']['max_retries']
+        proxy = None
+        proxy_wait_start = time.time()
+        proxy_wait_timeout = 60  # Max 60 seconds to wait for proxy
         
         while retry_count < max_retries:
             try:
                 proxy = self.proxy_pool.get_available_proxy()
                 if not proxy:
+                    if time.time() - proxy_wait_start > proxy_wait_timeout:
+                        result.error = "Timeout waiting for available proxy"
+                        result.status = DownloadStatus.FAILED
+                        print(f"⏱️  Download {video_id}: timeout waiting for proxy")
+                        return result
                     await asyncio.sleep(0.1)
                     continue
+                
+                proxy_wait_start = time.time()  # Reset wait timer on proxy acquired
                 
                 proxy_url = proxy if proxy != "__localhost__" else None
                 
@@ -525,6 +535,9 @@ class TikTokScraper:
                                 on_result_callback(result)
                     
                     print(f"  ✓ Downloads: {len(batch_results)} completed")
+                    
+                    # Phase 3: Clear memory before next batch
+                    del download_tasks
                 
                 # Record failures for posts with no metadata in this batch
                 for video_id in batch_ids:
@@ -540,9 +553,8 @@ class TikTokScraper:
                         if on_result_callback:
                             on_result_callback(result)
                 
-                # Phase 3: Clear memory before next batch
+                # Clear metadata for next batch
                 del metadata_dict
-                del download_tasks
                 print(f"  ✓ Batch complete. Memory cleared.")
             
             print(f"\n✓ Scraping complete: {len(all_results)}/{total} results")
